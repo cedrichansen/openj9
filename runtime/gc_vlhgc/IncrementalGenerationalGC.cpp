@@ -358,7 +358,7 @@ MM_IncrementalGenerationalGC::mainThreadGarbageCollect(MM_EnvironmentBase *envBa
 		/* This thread is doing GC work, account for the time spent into the GC bucket */
 		omrthread_set_category(vmThread->osThread, J9THREAD_CATEGORY_SYSTEM_GC_THREAD, J9THREAD_TYPE_SET_GC);
 	}
-	
+
 	switch(env->_cycleState->_collectionType) {
 	case MM_CycleState::CT_PARTIAL_GARBAGE_COLLECTION:
 		runPartialGarbageCollect(env, allocDescription);
@@ -415,6 +415,7 @@ MM_IncrementalGenerationalGC::globalMarkPhase(MM_EnvironmentVLHGC *env, bool inc
 	
 	PORT_ACCESS_FROM_ENVIRONMENT(env);
 
+	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats.clear();
 	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._markStats._startTime = j9time_hires_clock();
 
 	if (incrementalMark) {
@@ -932,7 +933,6 @@ MM_IncrementalGenerationalGC::runPartialGarbageCollect(MM_EnvironmentVLHGC *env,
 	 * Collection end work
 	 */
 
-
 	postCollect(env, env->_cycleState->_activeSubSpace);
 }
 
@@ -958,6 +958,8 @@ MM_IncrementalGenerationalGC::runGlobalMarkPhaseIncrement(MM_EnvironmentVLHGC *e
 	/* If a GMP hasn't already begun, this will be the first increment of a new cycle */
 	if(!isGlobalMarkPhaseRunning()) {
 		reportGMPCycleStart(env);
+		/* Inform scheduling delegate that it's internal metrics need to update/reset */
+		_schedulingDelegate.globalMarkCycleStart(env);
 		_persistentGlobalMarkPhaseState._vlhgcCycleStats.clear();
 	}
 
@@ -1008,6 +1010,9 @@ MM_IncrementalGenerationalGC::runGlobalMarkPhaseIncrement(MM_EnvironmentVLHGC *e
 		reportGCIncrementEnd(env);
 		reportGMPIncrementEnd(env);
 		reportGMPCycleEnd(env);
+		/* Remember how many PGC's occured per GMP cycle, so that we can weight GMP cost properly */
+		env->_previousPgcPerGmpCount = _schedulingDelegate.getPgcCountSinceGMPEnd(env);
+		_schedulingDelegate.globalMarkCycleEnd(env);
 		/* clear new OwnableSynchronizerObject count after scanOwnableSynchronizerObject in clearable phase */
 		_extensions->allocationStats.clearOwnableSynchronizer();
 	} else {
@@ -1170,6 +1175,10 @@ bool
 MM_IncrementalGenerationalGC::attemptHeapResize(MM_EnvironmentVLHGC *env, MM_AllocateDescription *allocDescription)
 {
 	bool isSystemGC = env->_cycleState->_gcCode.isExplicitGC();
+
+	/* Take a snapshot of the current information relevant to heap sizing (PGC/GMP time, eden + survivor space, etc.) */
+	_schedulingDelegate.updateHeapSizingData(env);
+
 	env->_cycleState->_activeSubSpace->checkResize(env, allocDescription, isSystemGC);
 	env->_cycleState->_activeSubSpace->performResize(env, allocDescription);
 
@@ -1203,7 +1212,14 @@ MM_IncrementalGenerationalGC::partialGarbageCollect(MM_EnvironmentVLHGC *env, MM
 	if (_schedulingDelegate.isGlobalSweepRequired()) {
 		Assert_MM_true(NULL == env->_cycleState->_externalCycleState);
 
+		PORT_ACCESS_FROM_ENVIRONMENT(env);
+
+		U_64 globalSweepStartTime = j9time_hires_clock();
+
 		_reclaimDelegate.runGlobalSweepBeforePGC(env, allocDescription, env->_cycleState->_activeSubSpace, env->_cycleState->_gcCode);
+
+		/** Time indicated here is ~10% higher than that of corresponding sweeps timems in vgc logs - which is okay. It is factored into GMP overhead */
+		U_64 globalSweepTimeUs = j9time_hires_delta(globalSweepStartTime, j9time_hires_clock(), J9PORT_TIME_DELTA_IN_MICROSECONDS);
 
 		/* TODO: lpnguyen make another statisticsDelegate or something that both schedulingDelegate and reclaimDelegate can see
 		 * so that we can avoid this kind of stats-passing mess.  
@@ -1215,6 +1231,7 @@ MM_IncrementalGenerationalGC::partialGarbageCollect(MM_EnvironmentVLHGC *env, MM
 
 		double optimalEmptinessRegionThreshold = _reclaimDelegate.calculateOptimalEmptinessRegionThreshold(env, regionConsumptionRate, avgSurvivorRegions, avgCopyForwardRate, scanTimeCostPerGMP);
 		_schedulingDelegate.setAutomaticDefragmentEmptinessThreshold(optimalEmptinessRegionThreshold);
+		_schedulingDelegate.setGlobalSweepTime(globalSweepTimeUs);
 	}
 
 	/* Determine if there are enough regions available to attempt a copy-forward collection.
@@ -1269,6 +1286,7 @@ MM_IncrementalGenerationalGC::partialGarbageCollectUsingCopyForward(MM_Environme
 
 	/* Record stats before a copy forward */
 	UDATA freeMemoryForSurvivor = _extensions->getHeap()->getActualFreeMemorySize();
+	env->_heapSizingData.freeTenure = freeMemoryForSurvivor;
 	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._copyForwardStats._freeMemoryBefore = freeMemoryForSurvivor;
 	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._copyForwardStats._totalMemoryBefore = _extensions->getHeap()->getMemorySize();
 
@@ -1879,7 +1897,6 @@ void
 MM_IncrementalGenerationalGC::reportCopyForwardStart(MM_EnvironmentVLHGC *env)
 {
 	PORT_ACCESS_FROM_ENVIRONMENT(env);
-
 	Trc_MM_CopyForwardStart(env->getLanguageVMThread());
 	TRIGGER_J9HOOK_MM_PRIVATE_COPY_FORWARD_START(
 		_extensions->privateHookInterface,
@@ -1928,6 +1945,13 @@ MM_IncrementalGenerationalGC::preConcurrentInitializeStatsAndReport(MM_Environme
 	stats->_scanTargetInBytes = _globalMarkPhaseIncrementBytesStillToScan;
 	env->_cycleState = &_persistentGlobalMarkPhaseState;
 	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._markStats._startTime = j9time_hires_clock();
+
+	/* Get an estimate of total process time when concurrent mark started. This is used to determine how much GMP costs*/
+	omrthread_process_time_t processStart;
+	omrthread_get_process_times(&processStart);
+	U_64 concurrentMarkStartTime = processStart._systemTime + processStart._userTime;
+	stats->_concurrentMarkStartTime = (uintptr_t)concurrentMarkStartTime;
+
 	TRIGGER_J9HOOK_MM_PRIVATE_CONCURRENT_PHASE_START(
 			_extensions->privateHookInterface,
 			env->getOmrVMThread(),
@@ -1978,6 +2002,9 @@ MM_IncrementalGenerationalGC::postConcurrentUpdateStatsAndReport(MM_EnvironmentB
 	stats->_bytesScanned = bytesConcurrentlyScanned;
 	stats->_terminationWasRequested = _forceConcurrentTermination;
 	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._markStats._endTime = j9time_hires_clock();
+
+	calculateConcurrentMarkWorkTime(env, stats);
+
 	TRIGGER_J9HOOK_MM_PRIVATE_CONCURRENT_PHASE_END(
 			_extensions->privateHookInterface,
 			env->getOmrVMThread(),
@@ -1985,6 +2012,41 @@ MM_IncrementalGenerationalGC::postConcurrentUpdateStatsAndReport(MM_EnvironmentB
 			J9HOOK_MM_PRIVATE_CONCURRENT_PHASE_END,
 			stats);
 	env->_cycleState = NULL;
+}
+
+void
+MM_IncrementalGenerationalGC::calculateConcurrentMarkWorkTime(MM_EnvironmentBase *env, MM_ConcurrentPhaseStatsBase *stats)
+{
+	/* Get an estimate of total process time now that concurrent mark increment has finished*/
+	omrthread_process_time_t processEnd;
+	omrthread_get_process_times(&processEnd);
+	U_64 processEndTime = processEnd._systemTime + processEnd._userTime;
+
+	/* Calculate how much process time has elapsed since the start of the concurrent mark increment */
+	U_64 concurrentElapsedTime = processEndTime - stats->_concurrentMarkStartTime;
+
+	/* Work time we attribute to concurrent work is difference of process time of gc threads now vs when concurrent phase started */
+	MM_MarkVLHGCStats markStats = _persistentGlobalMarkPhaseState._vlhgcIncrementStats._markStats;
+	double concurrentGCRatio = 0.5;
+
+	if (markStats._concurrentGCThreadsEndTimeSum != markStats._concurrentGCThreadsStartTimeSum) {
+		/* If the platform supports getting time for each thread, calculate what % of time gc threads were active relative to application threads. */
+		/* Determine the ratio of time spent doing GC work vs non-gc related work during the concurrent phase */
+		U_64 concurrentGCWorkTime = markStats._concurrentGCThreadsEndTimeSum - markStats._concurrentGCThreadsStartTimeSum;
+		concurrentGCRatio = (double)concurrentGCWorkTime/concurrentElapsedTime;
+
+		/* If there was a clock error, concurrentGCWorkTime might be too high or negative. Make sure ratio is between 0.1 and 0.8 */
+		concurrentGCRatio = OMR_MIN(concurrentGCRatio, 0.8);
+		concurrentGCRatio = OMR_MAX(concurrentGCRatio, 0.1);
+	} 
+
+	/* The GC time we attribute to concurrent phase is (ratio of time doing GC work instead of mutator work) * time interval of concurrent mark increment */
+	U_64 concurrentMarkGCThreadsWorkTime = (U_64)(concurrentElapsedTime * concurrentGCRatio);
+	_persistentGlobalMarkPhaseState._vlhgcCycleStats._concurrentMarkStats._concurrentMarkGCThreadsTotalWorkTime += concurrentMarkGCThreadsWorkTime;
+
+	Trc_MM_IncrementalGenerationalGC_calculateConcurrentMarkWorkTime(env->getLanguageVMThread(), concurrentGCRatio, concurrentMarkGCThreadsWorkTime / 1000, _persistentGlobalMarkPhaseState._vlhgcCycleStats._concurrentMarkStats._concurrentMarkGCThreadsTotalWorkTime / 1000);
+
+	_schedulingDelegate.setConcurrentGlobalMarkTime(_persistentGlobalMarkPhaseState._vlhgcCycleStats._concurrentMarkStats._concurrentMarkGCThreadsTotalWorkTime);
 }
 
 void

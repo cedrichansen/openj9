@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2020 IBM Corp. and others
+ * Copyright (c) 1991, 2021 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -386,6 +386,14 @@ public:
 	 * @param bytesConcurrentlyScanned[in] The number of bytes scanned during the concurrent task
 	 */
 	virtual void postConcurrentUpdateStatsAndReport(MM_EnvironmentBase *env, MM_ConcurrentPhaseStatsBase *stats, UDATA bytesConcurrentlyScanned);
+
+	/**
+	 * Called by the MainGCThread after it re-acquires the GC control monitor in order to calculate statistics 
+	 * regarding how long GC threads spent doing concurrent mark work relative to threads outside the GC. 
+	 * @param env[in] The main GC thread
+	 * @param stats[in/out] The stats data structure meant to be populated with the state of the collector after the concurrent operation ends (data populated before the collect is still in the structure)
+	 */ 
+	virtual void calculateConcurrentMarkWorkTime(MM_EnvironmentBase *env, MM_ConcurrentPhaseStatsBase *stats);
 
 	/**
 	 * Triggers a termination flag used to interrupt the concurrent task so that it will return.  This is called in the
