@@ -164,7 +164,8 @@ MM_SchedulingDelegate::calculateGlobalMarkOverhead(MM_EnvironmentVLHGC *env) {
 	/* Determine the time cost we attribute to concurrent GMP work from previous cycle */
 	uint64_t concurrentCostUs = _concurrentMarkGCThreadsTotalWorkTime / 1000;
 
-	/* Total GC overhead is time taken for all increments + the time we attribute for concurrent GC parts of GMP, and global sweep time.
+	/* 
+	 * Total GMP overhead is time taken for all increments + the time we attribute for concurrent GC parts of GMP, and global sweep time.
 	 * Since it's possible mutator threads were idle, only give 0.5 weight for concurrent GMP work
 	 */
 	uint64_t potentialGMPWorkTime =  _globalMarkIncrementsTotalTime + _globalSweepTimeUs + (uint64_t)(concurrentCostUs * 0.5);
@@ -640,14 +641,16 @@ MM_SchedulingDelegate::calculateRecommendedEdenSize(MM_EnvironmentVLHGC *env)
 		return getCurrentEdenSizeInBytes(env);
 	}
 	
-	/* Several statistics have observed which are needed to predict best eden size. 
+	/* 
+	 * Several statistics have observed which are needed to predict best eden size. 
 	 * These statistics are used to predict what eden size will lead to the lowest overhead, where overhead, is a hybrid 
 	 * between % of time spent in gc, and pgc pause times. The goal is to minimize % of time spent in gc,
 	 * while staying below the specific gc pause time threshold
 	 */
 
 	uint64_t avgPgcTimeUs = _historicalPartialGCTime * 1000;
-	/* Since _averagePgcInterval measures from start of one PGC to the next, we subtract the avg PGC duration
+	/* 
+	 * Since _averagePgcInterval measures from start of one PGC to the next, we subtract the avg PGC duration
 	 * to get the avg time between end and start of consecutive PGC's
 	 */
 	uint64_t avgPgcIntervalUs = _averagePgcInterval - avgPgcTimeUs;
@@ -656,7 +659,8 @@ MM_SchedulingDelegate::calculateRecommendedEdenSize(MM_EnvironmentVLHGC *env)
 	
 	double freeTenureHeadroom = 0.75;
 	
-	/*  _estimatedFreeTenure is free space outside of eden and survivor space, plus some additional headroom.
+	/*  
+	 * _estimatedFreeTenure is free space outside of eden and survivor space, plus some additional headroom.
 	 *  We add additional headroom so that we don't ever exhaust that free space
 	 */
 	uintptr_t freeTenure = OMR_MAX((uintptr_t)(_estimatedFreeTenure * freeTenureHeadroom), 1);
@@ -676,7 +680,8 @@ MM_SchedulingDelegate::calculateRecommendedEdenSize(MM_EnvironmentVLHGC *env)
 	/* How many samples we want to test between minEdenChange and maxEdenChange? */
 	uintptr_t numberOfSamples = 100;
 
-	/* Initially, we suggest the current eden size as the best size - until proven there is a better size.
+	/* 
+	 * Initially, we suggest the current eden size as the best size - until proven there is a better size.
 	 * The "better" size, will have a better blend of gc overhead (% of time gc is active relative to mutator), 
 	 * and more satisfactory pgc pause time (below target pgc pause is the goal).
 	 */
@@ -750,7 +755,8 @@ MM_SchedulingDelegate::predictNumberOfCollections(MM_EnvironmentVLHGC *env, uint
 double
 MM_SchedulingDelegate::predictPgcTime(MM_EnvironmentVLHGC *env, uintptr_t currentEdenSize, intptr_t edenSizeChange) 
 {	
-	/* PGC avg time MAY be related to eden size. Certain applications/allocation patterns, will cause pgc time to increase as eden increases,
+	/* 
+	 * PGC avg time MAY be related to eden size. Certain applications/allocation patterns, will cause pgc time to increase as eden increases,
 	 * while certain different workloads may keep pgc time relatively constant even as eden size increases. 
 	 * Create a model to determine how pgc time will be afffected by eden size - keeping in mind that _pgcTimeIncreasePerEdenRegionFactor can vary depending on the application
 	 */
@@ -1303,8 +1309,9 @@ MM_SchedulingDelegate::moveTowardRecommendedEden(MM_EnvironmentVLHGC *env, doubl
 	uintptr_t currentIdealEdenBytes = getIdealEdenSizeInBytes(env);
 	uintptr_t currentIdealEdenRegions = _idealEdenRegionCount;
 
-	/* The closer edenChangeSpeed is to 1, the larger the move towards reccomendedEdenSizeBytes will be. 
-     * 1 implies that eden should move all the way towards reccomendedEdenSizeBytes.
+	/* 
+	 * The closer edenChangeSpeed is to 1, the larger the move towards reccomendedEdenSizeBytes will be. 
+	 * 1 implies that eden should move all the way towards reccomendedEdenSizeBytes.
 	 */
 	intptr_t edenChange = (intptr_t)reccomendedEdenSizeBytes - currentIdealEdenBytes;
 	intptr_t targetEdenChange = (intptr_t)(edenChange * edenChangeSpeed);
@@ -1323,18 +1330,21 @@ MM_SchedulingDelegate::checkEdenSizeAfterPgc(MM_EnvironmentVLHGC *env, bool glob
 	}
 
 	if (_currentlyPerformingGMP && !globalSweepHappened) {
-		/* Don't change eden size while GMP cycle is running - 
+		/* 
+		 * Don't change eden size while GMP cycle is running - 
 		 * Unless a global sweep just happened, in which case we allow eden to change on first PGC after GMP 
 		 */
 		return;
 	}
 
 	if (heapIsFullyExpanded(env)) {
-		/* When heap is full, try to get eden to such a size to minimize overhead, while keeping into account the limits imposed by
+		/* 
+		 * When heap is full, try to get eden to such a size to minimize overhead, while keeping into account the limits imposed by
 		 * the heap size, and how much free space is available, since "blindly" increasing eden is no longer an option
 		 */
 		if (globalSweepHappened) {
-			/* Take a more aggreessive step towards ideal eden. 
+			/* 
+			 * Take a more aggreessive step towards ideal eden. 
 			 * At this point we have the most accuate information about liveness in the heap, so we make the most informed decision
 			 */
 			moveTowardRecommendedEden(env, 0.5);
@@ -1344,7 +1354,8 @@ MM_SchedulingDelegate::checkEdenSizeAfterPgc(MM_EnvironmentVLHGC *env, bool glob
 			moveTowardRecommendedEden(env, 0.25);
 		}
 	} else if (0 == _pgcCountSinceGMPEnd % 3) {
-		/* On every third pgc, make an adjustment to eden size based on observed pgc values. 
+		/*
+		 * On every third pgc, make an adjustment to eden size based on observed pgc values. 
 		 * Waiting for every third PGC, allows some statistics (which are being averaged) to settle to their new true averages
  		 */
 
@@ -1353,7 +1364,8 @@ MM_SchedulingDelegate::checkEdenSizeAfterPgc(MM_EnvironmentVLHGC *env, bool glob
 
 		double hybridEdenOverhead = calculateHybridEdenOverhead(env, _historicalPartialGCTime, _partialGcOverhead);
 		
-		/* Aim to get hybrid PGC overhead between extensions->dnssExpectedTimeRatioMinimum and extensions->dnssExpectedTimeRatioMaximum 
+		/* 
+		 * Aim to get hybrid PGC overhead between extensions->dnssExpectedTimeRatioMinimum and extensions->dnssExpectedTimeRatioMaximum 
 		 * by increasing or decreasing eden by 10% 
 		 */
 		if (_extensions->dnssExpectedTimeRatioMinimum._valueSpecified > hybridEdenOverhead ) {
@@ -1379,7 +1391,8 @@ MM_SchedulingDelegate::mapPgcTimeToPgcOverhead(MM_EnvironmentVLHGC *env, uintptr
 	double overhead;
 
 	if (heapIsFullyExpanded(env)) {
-		/* Eden size is being driven by heuristic which is trying to MINIMIZE hybrid overead. A low avg pgc time, is more desirable than high avg time,
+		/* 
+		 * Eden size is being driven by heuristic which is trying to MINIMIZE hybrid overead. A low avg pgc time, is more desirable than high avg time,
 		 * So the overhead logic needs to map a low avg pgc time, to a low overhead value (aka, a "better"/more desirable value)
 		 * Ex 20ms -> 5% (good/desirable), 1000ms -> 80% (bad/undesirable/eden should probably shrink)
 		 */
@@ -1388,7 +1401,8 @@ MM_SchedulingDelegate::mapPgcTimeToPgcOverhead(MM_EnvironmentVLHGC *env, uintptr
 			/* Once the pgc time is at, or below the max pgc time, there is no "benefit" from shrinking it further, since we are already satisfying tarokTargetMaxPauseTime */
 			overhead = midpointPct;
 		} else {
-			/* If pgc time is above the max pgc time, map high PGC time values as very very high overhead, in efforts to bring the PGC time down to tarokTargetMaxPauseTime
+			/* 
+			 * If pgc time is above the max pgc time, map high PGC time values as very very high overhead, in efforts to bring the PGC time down to tarokTargetMaxPauseTime
 			 * If pgc time is only slightly above tarokTargetMaxPauseTime, then there is only a very small overhead penalty, 
 			 * wheras being 2x higher than the target pause time leads to a significantly bigger penalty  
 			 */
@@ -1397,7 +1411,8 @@ MM_SchedulingDelegate::mapPgcTimeToPgcOverhead(MM_EnvironmentVLHGC *env, uintptr
 		}
 		
 	} else {
-		/* Eden sizing logic is trying to keep hybrid overhead between xminpct and xmaxpct, while trying to respect xmaxt. 
+		/* 
+		 * Eden sizing logic is trying to keep hybrid overhead between xminpct and xmaxpct, while trying to respect xmaxt. 
 		 * In this situation, when pgc times are very high (above xmaxt), the overhead score needs to return a low number, suggesting contraction.
 		 * If partialGcTimeMs is less than half of xmaxt, eden can expand without any fear of getting close to xmaxt - the mapped cpu overhead here is > xmaxpct (suggesting eden expansion)
 		 * Ex: 20ms -> 12% (suggest expansion), 2000ms -> 0.00% (suggest contraction)
@@ -1413,7 +1428,8 @@ MM_SchedulingDelegate::mapPgcTimeToPgcOverhead(MM_EnvironmentVLHGC *env, uintptr
 double 
 MM_SchedulingDelegate::calculateHybridEdenOverhead(MM_EnvironmentVLHGC *env, uintptr_t partialGcTimeMs, double overhead)
 {
-	/* When trying to size eden, there is a delicate balance between pgc overhead (here, overhead is cpu %, or % of time that pgc is active 
+	/* 
+	 * When trying to size eden, there is a delicate balance between pgc overhead (here, overhead is cpu %, or % of time that pgc is active 
 	 * versus inactive -> ex: pgc = 100ms, over 1000ms, overhead = 10%). In certain applications, with certain allocation patterns/liveness, 
 	 * pgc average time may be negatively impacted by growing eden unbounded. 
 	 * This function blends the pgc average time (whether it be the actual pgc historic time, or a "predicted" pgc pause time, is left up to the caller) with overhead (% of time gc is active relative to mutator).
@@ -1475,7 +1491,8 @@ MM_SchedulingDelegate::adjustIdealEdenRegionCount(MM_EnvironmentVLHGC *env)
 bool
 MM_SchedulingDelegate::heapIsFullyExpanded(MM_EnvironmentVLHGC *env)
 {
-	/* If the heap is the size of softmx or larger, eden should use heuristic that looks at free memory, rather than PGC overhead, 
+	/* 
+	 * If the heap is the size of softmx or larger, eden should use heuristic that looks at free memory, rather than PGC overhead, 
 	 * since there are now free memory constraints eden must be aware of
 	 */
 	uintptr_t currentHeapSize = _regionManager->getRegionSize() * _numberOfHeapRegions;
@@ -1647,7 +1664,8 @@ MM_SchedulingDelegate::updateGMPStats(MM_EnvironmentVLHGC *env)
 void 
 MM_SchedulingDelegate::updatePgcTimePrediction(MM_EnvironmentVLHGC *env)
 {
-	/* Create a model that passes through (minimumEdenRegions,minimumPgcTime) and (current eden size in regions, pgcTime) 
+	/* 
+	 * Create a model that passes through (minimumEdenRegions,minimumPgcTime) and (current eden size in regions, pgcTime) 
 	 * By remembering historic values of _pgcTimeIncreasePerEdenRegionFactor, it is possible to reasonably accuratly predict how long PGC will take, if eden were to change size
 	 */
 	double x1 = (double)minimumEdenRegions;
@@ -1656,7 +1674,8 @@ MM_SchedulingDelegate::updatePgcTimePrediction(MM_EnvironmentVLHGC *env)
 	double x2 = (double)getCurrentEdenSizeInRegions(env);
 	double y2 = (double)_historicalPartialGCTime;
 
-	/* Calculate how closely related PGC is to eden time. The closer _pgcTimeIncreasePerEdenRegionFactor is to 1.0, the more directly changing eden size will impact pgc time.
+	/* 
+	 * Calculate how closely related PGC is to eden time. The closer _pgcTimeIncreasePerEdenRegionFactor is to 1.0, the more directly changing eden size will impact pgc time.
 	 * The higher _pgcTimeIncreasePerEdenRegionFactor is from 1, the less changing eden size will affect pgc time. 
 	 * In certain edge cases where eden is very small (minimumEdenRegions in size), or pgc time is very small, skip this set of calculation, since the results will not be correct
 	 */
