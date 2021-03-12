@@ -1214,12 +1214,11 @@ MM_IncrementalGenerationalGC::partialGarbageCollect(MM_EnvironmentVLHGC *env, MM
 
 		PORT_ACCESS_FROM_ENVIRONMENT(env);
 
-		U_64 globalSweepStartTime = j9time_hires_clock();
-
 		_reclaimDelegate.runGlobalSweepBeforePGC(env, allocDescription, env->_cycleState->_activeSubSpace, env->_cycleState->_gcCode);
 
-		/** Time indicated here is ~10% higher than that of corresponding sweeps timems in vgc logs - which is okay. It is factored into GMP overhead */
-		U_64 globalSweepTimeUs = j9time_hires_delta(globalSweepStartTime, j9time_hires_clock(), J9PORT_TIME_DELTA_IN_MICROSECONDS);
+		U_64 sweepTimeStart = static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._sweepStats._startTime;
+		U_64 sweepTimeEnd = static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._sweepStats._endTime;
+		U_64 globalSweepTimeUs = j9time_hires_delta(sweepTimeStart, sweepTimeEnd, J9PORT_TIME_DELTA_IN_MICROSECONDS);
 
 		/* TODO: lpnguyen make another statisticsDelegate or something that both schedulingDelegate and reclaimDelegate can see
 		 * so that we can avoid this kind of stats-passing mess.  
