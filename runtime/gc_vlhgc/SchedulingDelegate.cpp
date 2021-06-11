@@ -62,6 +62,7 @@ const double incrementalScanTimePerGMPHistoricWeight = 0.50;
 const double bytesScannedConcurrentlyPerGMPHistoricWeight = 0.50;
 const uintptr_t minimumPgcTime = 5;
 const uintptr_t consecutivePGCToChangeEden = 16;
+const uintptr_t edenChangeHistoryCount = 64;
 
 MM_SchedulingDelegate::MM_SchedulingDelegate (MM_EnvironmentVLHGC *env, MM_HeapRegionManager *manager)
 	: MM_BaseNonVirtual()
@@ -118,6 +119,8 @@ MM_SchedulingDelegate::MM_SchedulingDelegate (MM_EnvironmentVLHGC *env, MM_HeapR
 	, _pgcCountSinceGMPEnd(0)
 	, _averagePgcInterval(0)
 	, _totalGMPWorkTimeUs(0)
+	, _historicalEdenChangeRecommendations(NULL)
+	, _historicalEdenChangeRecommendationWriteIndex(0)
 	, _scanRateStats()
 {
 	_typeId = __FUNCTION__;
@@ -146,8 +149,26 @@ MM_SchedulingDelegate::initialize(MM_EnvironmentVLHGC *env)
 
 	_partialGcOverhead = _extensions->dnssExpectedTimeRatioMaximum._valueSpecified;
 
+	_historicalEdenChangeRecommendations = (intptr_t *)env->getForge()->allocate(edenChangeHistoryCount * sizeof(_historicalEdenChangeRecommendations), MM_AllocationCategory::FIXED, J9_GET_CALLSITE());
+	if (NULL == _historicalEdenChangeRecommendations) {
+		return false;
+	}
+
+	 memset(_historicalEdenChangeRecommendations, 0, edenChangeHistoryCount * sizeof(_historicalEdenChangeRecommendations));
+    
 	return true;
 }
+
+void 
+MM_SchedulingDelegate::tearDown(MM_EnvironmentVLHGC *env) 
+{
+	if (NULL != _historicalEdenChangeRecommendations) {
+		env->getForge()->free(_historicalEdenChangeRecommendations);
+		_historicalEdenChangeRecommendations = NULL;
+	}
+	_historicalEdenChangeRecommendationWriteIndex = 0;
+}
+
 
 uintptr_t
 MM_SchedulingDelegate::getInitialTaxationThreshold(MM_EnvironmentVLHGC *env)
@@ -1473,8 +1494,64 @@ MM_SchedulingDelegate::calculateEdenChangeHeapNotFullyExpanded(MM_EnvironmentVLH
 		/* Expand eden a bit */
 		edenRegionChange = edenChangeMagnitude;
 	}
+
+	addEdenHistoricalChangeRecommendation(env, edenRegionChange);
+
+	if (edenIsOscillating(env)) {
+		/* Since eden is oscillating, don't move eden. If oscillations subsiside later, then eden will be allowed to change again */
+		edenRegionChange = 0;
+	}
+
 	return edenRegionChange;
 }
+
+bool 
+MM_SchedulingDelegate::edenIsOscillating(MM_EnvironmentVLHGC *env) 
+{	
+	uintptr_t numRecommendationSignChanges = 0;
+	intptr_t signOfTrend = _historicalEdenChangeRecommendations[_historicalEdenChangeRecommendationWriteIndex];
+
+	/*
+	 * NOTE: At this moment in time _historicalEdenChangeRecommendationWriteIndex will be on the oldest historical recommendation that is being kept.
+	 * Start scanning from oldest, to newest recommendation, to detect oscillations
+	 */
+	for (uintptr_t i = _historicalEdenChangeRecommendationWriteIndex; i <  _historicalEdenChangeRecommendationWriteIndex + edenChangeHistoryCount; i++) {
+		intptr_t historicalValue = _historicalEdenChangeRecommendations[i % edenChangeHistoryCount];
+
+		if (signOfTrend == 0 && historicalValue != 0) {
+			/* The initial historical recommendation was 0, and we are now scanning a non-zero recommendation, so save it as the initial trend sign */
+			signOfTrend = historicalValue;
+		}
+
+		if ((historicalValue > 0 && signOfTrend < 0) || (historicalValue < 0 && signOfTrend > 0)) {
+			/* The trend direction (+/-) does not match the value we are visiting. Ie: the recommendations went from +, to -, or vise versa */
+			signOfTrend = historicalValue;
+			numRecommendationSignChanges = numRecommendationSignChanges + 1;
+
+			if (numRecommendationSignChanges >= 3) {
+				/* Eden sizing recommendations have been oscillating, since the sign change for the historical recommendations has changed too often */
+				return true;
+			}
+			
+		} 
+	}
+
+	return false;
+}
+
+void 
+MM_SchedulingDelegate::addEdenHistoricalChangeRecommendation(MM_EnvironmentVLHGC *env, intptr_t entry)
+{
+	_historicalEdenChangeRecommendations[_historicalEdenChangeRecommendationWriteIndex] = entry;
+
+	_historicalEdenChangeRecommendationWriteIndex = _historicalEdenChangeRecommendationWriteIndex + 1;
+
+	/* _historicalEdenChangeRecommendations is being used as a circular buffer, so reset _historicalEdenChangeRecommendationWriteIndex to 0 when we reach end of array */
+	if (edenChangeHistoryCount == _historicalEdenChangeRecommendationWriteIndex ) {
+		_historicalEdenChangeRecommendationWriteIndex = 0;
+	}
+}
+
 
 double 
 MM_SchedulingDelegate::mapPgcPauseOverheadToPgcCPUOverhead(MM_EnvironmentVLHGC *env, uintptr_t pgcPauseTimeMs, bool heapFullyExpanded) {

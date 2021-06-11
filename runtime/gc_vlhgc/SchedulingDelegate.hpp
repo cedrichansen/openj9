@@ -102,6 +102,9 @@ private:
 
 	uint64_t _totalGMPWorkTimeUs; /**< Represents the total time that the previous GMP cycle took. Includes concurrent work, increments of work, and global sweep time  */
 
+	intptr_t * _historicalEdenChangeRecommendations; /** An array representing how eden sizing has changed historically. While this is an array, it is being used as a circular buffer */
+	uintptr_t _historicalEdenChangeRecommendationWriteIndex; /**< Corresponds to the current write index for _historicalEdenChangeRecommendations */
+
 	struct MM_SchedulingDelegate_ScanRateStats {
 		uintptr_t historicalBytesScanned;		/**< Historical number of bytes scanned for mark operations */
 		uint64_t historicalScanMicroseconds;	/**< Historical scan times for mark operations */
@@ -114,6 +117,7 @@ private:
 		{
 		}
 	} _scanRateStats;
+
 
 	double _automaticDefragmentEmptinessThreshold; /**< Recommended automatic value for defragmentEmptinessThreshold*/
 
@@ -302,6 +306,20 @@ private:
 	void checkEdenSizeAfterPgc(MM_EnvironmentVLHGC *env, bool globalSweepHappened);
 
 	/**
+	 * Checks to see if eden sizing recommendation is suggesting changes which are causing eden to oscillate
+	 * @param env [in] the main GC thread
+	 * @return true if eden is oscillating, false if eden is not oscilatting
+	 */ 
+	bool edenIsOscillating(MM_EnvironmentVLHGC *env);
+
+	/**
+	 * Adds an entry to _historicalEdenChangeRecommendations, and increments _historicalEdenChangeRecommendationWriteIndex
+	 * @param env [in] the main GC thread
+	 * @param entry the new entry to add to _historicalEdenChangeRecommendations
+	 */ 
+	void addEdenHistoricalChangeRecommendation(MM_EnvironmentVLHGC *env, intptr_t entry);
+
+	/**
 	 * Calculates how much eden size should change when heap is not fully expanded, based off of pgc time, and pgc cpu overhead
 	 * @return by how many regions eden should change
 	 */
@@ -403,6 +421,12 @@ public:
 	 * @return Whether or not the initialization succeeded
 	 */
 	bool initialize(MM_EnvironmentVLHGC *env);
+
+	/**
+	 * Tear down the receiver 
+	 * @param env[in] The thread tearing down the collector
+	 */
+	void tearDown(MM_EnvironmentVLHGC *env);
 
 	uintptr_t initializeKickoffHeadroom(MM_EnvironmentVLHGC *env);
 

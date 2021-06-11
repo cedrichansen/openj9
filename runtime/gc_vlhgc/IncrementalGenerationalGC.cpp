@@ -306,6 +306,8 @@ MM_IncrementalGenerationalGC::tearDown(MM_EnvironmentVLHGC *env)
 	_globalMarkDelegate.tearDown(env);
 	_reclaimDelegate.tearDown(env);
 
+	_schedulingDelegate.tearDown(env);
+
 	_collectionSetDelegate.tearDown(env);
 	_projectedSurvivalCollectionSetDelegate.tearDown(env);
 
